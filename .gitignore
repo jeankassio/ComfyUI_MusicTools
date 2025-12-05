@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (internal development docs)
+# Keep only README.md visible to users
+docs/*.md
+!docs/README.md
+
+# Test files
+tests/test_*.py
+
+# Development scripts
+scripts/*.py
+
+# Examples backup folder
+EXAMPLE_DONT_CHANGE/
+
+# Model cache (if user wants to exclude)
+# Uncomment if you don't want to track downloaded models
+# models/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.txt
+
+# ComfyUI specific
+*.pyc
+__pycache__/
+src/__pycache__/
+tests/__pycache__/
+scripts/__pycache__/
