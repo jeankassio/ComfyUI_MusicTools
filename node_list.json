@@ -1,0 +1,98 @@
+[
+  [
+    "Music_MasterAudioEnhancement",
+    {
+      "title": "Master Audio Enhancement",
+      "description": "Complete professional mastering chain with AI enhancement, vocal naturalizer, multiband compression, EQ, and LUFS normalization. Perfect for AI vocals.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_NoiseRemove",
+    {
+      "title": "Noise Removal",
+      "description": "Professional noise reduction with two modes: Hiss-only (safe for music) or Full denoise.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_AudioUpscale",
+    {
+      "title": "Audio Upscale",
+      "description": "Sample rate upscaling from 16kHz to 192kHz with frequency restoration.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_StereoEnhance",
+    {
+      "title": "Stereo Enhance",
+      "description": "Stereo widening and imaging enhancement.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_LufsNormalizer",
+    {
+      "title": "LUFS Normalizer",
+      "description": "Industry-standard loudness normalization (ITU-R BS.1770-4). Supports streaming, broadcast, and CD standards.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_Equalize",
+    {
+      "title": "3-Band EQ",
+      "description": "Parametric 3-band equalizer (bass, mid, treble) with ±12dB control.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_Reverb",
+    {
+      "title": "Reverb",
+      "description": "Algorithmic reverb effect with configurable room size and wet/dry mix.",
+      "category": "audio/effects"
+    }
+  ],
+  [
+    "Music_Compressor",
+    {
+      "title": "Compressor",
+      "description": "Dynamic range compression with configurable ratio, threshold, attack, and release.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_Gain",
+    {
+      "title": "Gain",
+      "description": "Simple volume adjustment from -24dB to +24dB.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_AudioMixer",
+    {
+      "title": "Audio Mixer",
+      "description": "Mix two audio streams with crossfade control.",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_StemSeparation",
+    {
+      "title": "Stem Separation",
+      "description": "Extract vocals, drums, bass, and other stems using AI models (Demucs/Spleeter).",
+      "category": "audio/processing"
+    }
+  ],
+  [
+    "Music_StemRecombination",
+    {
+      "title": "Stem Recombination",
+      "description": "Recombine separated stems with individual volume control for each stem.",
+      "category": "audio/processing"
+    }
+  ]
+]
