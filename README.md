@@ -850,7 +850,7 @@ Contributions are welcome! Areas for improvement:
 ### Development Setup
 
 ```bash
-git clone https://github.com/yourusername/ComfyUI_MusicTools.git
+git clone https://github.com/jeankassio/ComfyUI_MusicTools.git
 cd ComfyUI_MusicTools
 pip install -r requirements.txt
 ```
@@ -890,8 +890,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📧 Support
 
-- 🐛 **Issues**: [GitHub Issues](https://github.com/yourusername/ComfyUI_MusicTools/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/yourusername/ComfyUI_MusicTools/discussions)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/jeankassio/ComfyUI_MusicTools/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/jeankassio/ComfyUI_MusicTools/discussions)
 - 📖 **Documentation**: See `VOCAL_NATURALIZER.md` for detailed vocal naturalizer guide
 
 ## ⭐ Star History
