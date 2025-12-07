@@ -28,7 +28,7 @@ Documentation = "https://github.com/jeankassio/ComfyUI_MusicTools/wiki"
 "Bug Tracker" = "https://github.com/jeankassio/ComfyUI_MusicTools/issues"
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "jeankassio12"
 DisplayName = "ComfyUI_MusicTools"
 Icon = ""
 includes = [] 
