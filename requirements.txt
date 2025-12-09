@@ -1,0 +1,16 @@
+# ComfyUI Music Tools - Core Dependencies
+
+# Core audio processing
+numpy>=1.21.0
+scipy>=1.7.0
+torch>=2.0.0
+
+# Audio enhancement and processing
+pyloudnorm>=0.1.0
+noisereduce>=3.0.0
+librosa>=0.10.0
+
+# Optional but important for advanced features
+torchaudio>=2.0.0
+speechbrain>=0.5.0
+huggingface-hub>=0.16.0
