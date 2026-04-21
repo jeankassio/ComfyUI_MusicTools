@@ -1002,6 +1002,15 @@ class Music_MasterAudioEnhancement:
                     "display": "slider",
                 }),
             },
+            "optional": {
+                # Preset character: if set to anything other than "none", overrides
+                # naturalize_vocal with the corresponding NATURALIZER_PRESETS entry.
+                "preset_character": (
+                    ["none", "cold_spoken", "krautrock_motorik", "industrial_80s",
+                     "trip_hop_urban", "warm_documentary", "raw_untouched"],
+                    {"default": "none"},
+                ),
+            },
         }
     
     RETURN_TYPES = ("AUDIO",)
@@ -1010,7 +1019,8 @@ class Music_MasterAudioEnhancement:
     CATEGORY = "music"
     
     def enhance(self, audio, denoise_mode, ai_enhance, ai_mix, denoise_intensity, eq_low_gain, eq_mid_gain, eq_high_gain,
-                clarity_amount, target_loudness, vocal_enhance, deesser_amount, breath_smooth, reverb_amount, naturalize_vocal):
+                clarity_amount, target_loudness, vocal_enhance, deesser_amount, breath_smooth, reverb_amount, naturalize_vocal,
+                preset_character="none"):
         """
         Apply professional master enhancement to audio with stem separation
         
@@ -1038,14 +1048,24 @@ class Music_MasterAudioEnhancement:
             
             # Convert to numpy
             audio_np, sample_rate = audio_to_numpy(audio)
-            
+
+            # If a preset_character is selected, apply the naturalizer preset now
+            # and pass naturalize_vocal=0 to process_audio_stems so it isn't applied twice.
+            if preset_character and preset_character != "none":
+                from .src.vocal_enhance import apply_naturalizer_preset
+                print(f"[Master Audio] Applying naturalizer preset: {preset_character}")
+                audio_np = apply_naturalizer_preset(audio_np, sample_rate, preset_character)
+                _naturalize_vocal = 0.0
+            else:
+                _naturalize_vocal = naturalize_vocal
+
             # Create progress bar
             pbar = get_progress_bar(100, "Master Enhancement")
             pbar.update_absolute(5)
             print("[Master Audio] Starting processing...")
             print(f"[Master Audio] Denoise mode: {denoise_mode}")
             pbar.update_absolute(10)
-            
+
             # Process audio directly (no stem separation)
             print("[Master Audio] Processing audio (this will show detailed progress)...")
             audio_np = process_audio_stems(
@@ -1054,7 +1074,7 @@ class Music_MasterAudioEnhancement:
                 clarity_amount, target_loudness,
                 denoise_mode, denoise_intensity,
                 ai_enhance, ai_mix,
-                vocal_enhance, deesser_amount, breath_smooth, reverb_amount, naturalize_vocal
+                vocal_enhance, deesser_amount, breath_smooth, reverb_amount, _naturalize_vocal
             )
             pbar.update_absolute(95)
             print("[Master Audio] ✓ Processing complete!")

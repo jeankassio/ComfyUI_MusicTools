@@ -8,6 +8,22 @@ import numpy as np
 from scipy import signal
 
 
+# ─────────────────────────────────────────────────────────────────
+# CHARACTER PRESETS — v2.0
+# Each preset exposes the 5 internal parameters independently.
+# Validated on Suno/Udio spoken word and vocal stems.
+# Contributor: Antonio Mainenti (Valter Ego / Wash, the AI gang)
+# ─────────────────────────────────────────────────────────────────
+NATURALIZER_PRESETS = {
+    "cold_spoken":       {"pitch_drift": 0.05, "formant_variation": 0.08, "metallic_cut": 0.65, "noise_masking": 0.10, "transition_smooth": 0.15},
+    "krautrock_motorik": {"pitch_drift": 0.15, "formant_variation": 0.20, "metallic_cut": 0.60, "noise_masking": 0.20, "transition_smooth": 0.85},
+    "industrial_80s":    {"pitch_drift": 0.30, "formant_variation": 0.60, "metallic_cut": 0.15, "noise_masking": 0.80, "transition_smooth": 0.10},
+    "trip_hop_urban":    {"pitch_drift": 0.20, "formant_variation": 0.50, "metallic_cut": 0.75, "noise_masking": 0.15, "transition_smooth": 0.55},
+    "warm_documentary":  {"pitch_drift": 0.45, "formant_variation": 0.45, "metallic_cut": 0.50, "noise_masking": 0.15, "transition_smooth": 0.80},
+    "raw_untouched":     {"pitch_drift": 0.00, "formant_variation": 0.00, "metallic_cut": 1.00, "noise_masking": 0.00, "transition_smooth": 0.00},
+}
+
+
 def apply_deesser(audio, sample_rate=44100, sensitivity=0.5):
     """
     Fast de-esser to reduce sibilance (4-8 kHz hiss).
@@ -148,76 +164,122 @@ def apply_vocal_reverb(audio, sample_rate=44100, reverb_amount=0.3, reverb_type=
     return result.astype(np.float32)
 
 
-def apply_vocal_naturalizer(audio, sample_rate=44100, amount=0.5):
+def apply_vocal_naturalizer(audio, sample_rate=44100, amount=None,
+                             pitch_drift=0.5, formant_variation=0.5,
+                             metallic_cut=0.5, noise_masking=0.5,
+                             transition_smooth=0.5):
     """
     Remove robotic/auto-tune artifacts from AI-generated vocals (Ace-Step).
     Reduces pitch quantization, adds subtle pitch variation, and humanizes timbre.
-    
+
     Args:
         audio: Audio array (channels, samples) or (samples,)
         sample_rate: Sample rate
-        amount: 0-1, how much to naturalize (0.5 is balanced)
-    
+        amount: Legacy parameter — if provided (positional or keyword), maps all
+                five controls to the same value (backwards-compatible with old callers).
+        pitch_drift: 0-1, vibrato depth and pitch-variation amount (default 0.5)
+        formant_variation: 0-1, random formant modulation depth (default 0.5)
+        metallic_cut: 0-1, attenuation of 6-10 kHz metallic artifacts (default 0.5)
+        noise_masking: 0-1, shaped noise to mask pitch-quantization steps (default 0.5)
+        transition_smooth: 0-1, LP smoothing on pitch transitions (default 0.5)
+
     Returns:
         Naturalized audio
     """
+    # Retrocompatibility: a positional/keyword amount= maps all 5 params to that value
+    if amount is not None:
+        pitch_drift = amount
+        formant_variation = amount
+        metallic_cut = amount
+        noise_masking = amount
+        transition_smooth = amount
+
     if len(audio.shape) > 1:
         result = np.zeros_like(audio)
         for ch in range(audio.shape[0]):
-            result[ch, :] = apply_vocal_naturalizer(audio[ch, :], sample_rate, amount)
+            result[ch, :] = apply_vocal_naturalizer(
+                audio[ch, :], sample_rate,
+                pitch_drift=pitch_drift, formant_variation=formant_variation,
+                metallic_cut=metallic_cut, noise_masking=noise_masking,
+                transition_smooth=transition_smooth,
+            )
         return result
-    
+
     audio = audio.astype(np.float32)
-    if amount < 0.01:
+    if max(pitch_drift, formant_variation, metallic_cut, noise_masking, transition_smooth) < 0.01:
         return audio
-    
+
     result = audio.copy()
-    
+
     # 1. Add subtle pitch variation (vibrato-like) to break pitch quantization
     # Auto-tune locks pitch too rigidly; add natural human pitch drift
     vibrato_rate = 4.5  # Hz (natural vibrato speed)
-    vibrato_depth = 0.002 * amount  # Very subtle (0.2% pitch variation at max)
+    vibrato_depth = 0.002 * pitch_drift
     t = np.arange(len(audio)) / sample_rate
     pitch_variation = np.sin(2 * np.pi * vibrato_rate * t) * vibrato_depth
-    
+
     # Apply pitch variation via phase modulation (fast approximation)
-    # Modulate the signal slightly to create pitch drift
     phase_mod = np.cumsum(pitch_variation) * 2 * np.pi
-    modulated = audio * (1 + np.sin(phase_mod) * 0.01 * amount)
+    modulated = audio * (1 + np.sin(phase_mod) * 0.01 * pitch_drift)
     result = result * 0.7 + modulated * 0.3
-    
+
     # 2. Add formant variation to humanize timbre
     # Auto-tune often has locked formants; add subtle variation
-    formant_variation = np.random.randn(len(audio)) * 0.005 * amount
+    fv_noise = np.random.randn(len(audio)) * 0.005 * formant_variation
     sos_formant = signal.butter(2, [200, 3000], btype='band', fs=sample_rate, output='sos')
     formant_signal = signal.sosfilt(sos_formant, audio).astype(np.float32)
-    formant_modulated = formant_signal * (1 + formant_variation)
-    result = result + formant_modulated * 0.15 * amount
-    
+    formant_modulated = formant_signal * (1 + fv_noise)
+    result = result + formant_modulated * 0.15 * formant_variation
+
     # 3. Reduce "metallic" high-frequency artifacts (common in auto-tune)
     # Cut harsh digital artifacts around 6-10 kHz
     sos_metal = signal.butter(3, [6000, 10000], btype='band', fs=sample_rate, output='sos')
     metallic = signal.sosfilt(sos_metal, audio).astype(np.float32)
-    result = result - metallic * 0.3 * amount
-    
+    result = result - metallic * 0.3 * metallic_cut
+
     # 4. Add subtle noise to mask quantization artifacts
     # Auto-tune creates "stair-step" pitch; noise smooths it
-    noise = np.random.randn(len(audio)) * 0.002 * amount
+    noise = np.random.randn(len(audio)) * 0.002 * noise_masking
     sos_noise = signal.butter(2, [1000, 4000], btype='band', fs=sample_rate, output='sos')
     shaped_noise = signal.sosfilt(sos_noise, noise).astype(np.float32)
     result = result + shaped_noise
-    
+
     # 5. Smooth abrupt pitch transitions (auto-tune artifacts)
     # Use gentle low-pass on difference signal to smooth steps
     diff = np.diff(result, prepend=result[0])
     sos_smooth = signal.butter(1, 50, btype='low', fs=sample_rate, output='sos')
     smoothed_diff = signal.sosfilt(sos_smooth, diff).astype(np.float32)
-    smooth_blend = 0.4 * amount
+    smooth_blend = 0.4 * transition_smooth
     result = result - diff * smooth_blend + smoothed_diff * smooth_blend
-    
+
     # Normalize to prevent clipping
     max_val = np.max(np.abs(result))
     if max_val > 0.95:
         result = result * (0.95 / max_val)
-    
+
     return result.astype(np.float32)
+
+
+def apply_naturalizer_preset(audio, sr, preset_name):
+    """
+    Apply apply_vocal_naturalizer() using the parameter values stored in
+    NATURALIZER_PRESETS[preset_name].
+
+    Args:
+        audio: Audio array (channels, samples) or (samples,)
+        sr: Sample rate
+        preset_name: Key in NATURALIZER_PRESETS
+
+    Returns:
+        Naturalized audio
+
+    Raises:
+        KeyError if preset_name is not found
+    """
+    if preset_name not in NATURALIZER_PRESETS:
+        raise KeyError(
+            f"Unknown preset '{preset_name}'. "
+            f"Available presets: {list(NATURALIZER_PRESETS)}"
+        )
+    params = NATURALIZER_PRESETS[preset_name]
+    return apply_vocal_naturalizer(audio, sample_rate=sr, **params)
