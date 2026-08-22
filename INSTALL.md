@@ -32,25 +32,19 @@ cd ComfyUI_MusicTools
 
 All dependencies are listed in `requirements.txt` and will be automatically installed:
 
-- numpy>=1.21.0
-- scipy>=1.7.0
-- librosa>=0.9.0
-- soundfile>=0.10.0
-- pyloudnorm>=0.1.0
-- noisereduce>=2.0.0
-- torch>=1.9.0
-- torchaudio>=0.9.0
+- numpy>=1.23.0
+- scipy>=1.9.0
+- pyloudnorm>=0.1.1
+- noisereduce>=3.0.0
 
 Optional (for AI enhancement):
-- speechbrain (auto-installs when needed)
-- huggingface-hub (auto-installs when needed)
-
-Optional (for stem separation):
-- spleeter or demucs (install manually if needed)
+- Install `requirements-ai.txt` with the same Python used by ComfyUI.
+- Keep ComfyUI's existing matching torch/torchaudio builds.
+- The heuristic stem split does not require Demucs or Spleeter.
 
 ## Verification
 
-After installation, restart ComfyUI and verify that nodes starting with "Music -" appear in the node menu under the "audio" category.
+After installation, restart ComfyUI and verify that nodes starting with "Music" appear in the node menu under the `music` category.
 
 ## Troubleshooting
 
@@ -58,6 +52,6 @@ If nodes don't appear:
 1. Check that all dependencies installed correctly
 2. Restart ComfyUI completely
 3. Check ComfyUI console for error messages
-4. Verify Python version is 3.8 or higher
+4. Verify Python version is 3.10 or higher
 
 For more help, see the main README.md or open an issue on GitHub.

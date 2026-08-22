@@ -58,9 +58,9 @@ LUFS_CONFIG = {
     
     # LUFS standards
     "standards": {
-        "spotify": -23,
+        "spotify": -14,
         "youtube": -14,
-        "broadcast": -14,  # EBU R128
+        "broadcast": -23,  # EBU R128 programme loudness target
         "podcast": -16,
         "gaming": -18,
     },

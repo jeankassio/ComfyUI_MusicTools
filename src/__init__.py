@@ -2,12 +2,28 @@
 ComfyUI Music Tools - Core Audio Processing Modules
 """
 
-from .utils import *
-from .vocal_enhance import *
-from .enhanced_master_audio import *
-from .master_audio import *
-from .stereo_enhance import *
-from .config import *
+from .audio_repair import repair_audio
+from .genre_presets import apply_genre_finish
+from .limiter import apply_true_peak_limiter, measure_true_peak_db
+from .stereo_enhance import apply_pseudo_stereo, apply_stereo_correlation_fix, apply_stereo_widening
+from .utils import (
+    apply_compression, apply_eq, apply_gain, apply_reverb, audio_to_numpy,
+    calculate_lufs, enhance_stereo, get_progress_bar, mix_audio,
+    normalize_to_lufs, numpy_to_audio_tensor, recombine_stems,
+    restore_frequency, separate_all_stems, separate_stems,
+    spectral_subtraction, trim_audio, upscale_audio,
+)
+from .vocal_enhance import (
+    apply_breath_smoother, apply_deesser, apply_vocal_naturalizer,
+    apply_vocal_reverb,
+)
+
+
+def process_audio_stems(*args, **kwargs):
+    """Load the optional AI/mastering module only when this pipeline is used."""
+    from .enhanced_master_audio import process_audio_stems as _process_audio_stems
+
+    return _process_audio_stems(*args, **kwargs)
 
 __all__ = [
     'audio_to_numpy',
@@ -32,5 +48,12 @@ __all__ = [
     'apply_breath_smoother',
     'apply_vocal_reverb',
     'apply_vocal_naturalizer',
+    'apply_stereo_widening',
+    'apply_stereo_correlation_fix',
+    'apply_pseudo_stereo',
     'process_audio_stems',
+    'repair_audio',
+    'apply_genre_finish',
+    'apply_true_peak_limiter',
+    'measure_true_peak_db',
 ]

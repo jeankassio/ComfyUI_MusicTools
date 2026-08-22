@@ -11,6 +11,7 @@ from .src.utils import (
     upscale_audio,
     restore_frequency,
     enhance_stereo,
+    ensure_stereo,
     calculate_lufs,
     normalize_to_lufs,
     apply_eq,
@@ -24,6 +25,8 @@ from .src.utils import (
     recombine_stems,
     get_progress_bar,
 )
+from .src.audio_repair import REPAIR_MODES, repair_audio
+from .src.genre_presets import GENRE_OPTIONS, apply_genre_finish
 
 
 class Music_NoiseRemove:
@@ -71,7 +74,7 @@ class Music_NoiseRemove:
             Tuple with processed audio dict
         """
         try:
-            from enhanced_master_audio import apply_denoise_hiss_only, apply_denoise_simple
+            from .src.enhanced_master_audio import apply_denoise_hiss_only, apply_denoise_simple
             
             print(f"\n[Music_NoiseRemove] Starting noise removal")
             print(f"[Music_NoiseRemove] Mode: {mode}")
@@ -86,7 +89,7 @@ class Music_NoiseRemove:
                 return (audio,)
             
             # Check minimum samples
-            n_channels, n_samples = audio_np.shape
+            n_samples = audio_np.shape[-1]
             if n_samples < 2048:
                 print(f"[Music_NoiseRemove] Audio too short ({n_samples} samples), skipping")
                 return (audio,)
@@ -118,7 +121,7 @@ class Music_NoiseRemove:
             result = numpy_to_audio_tensor(processed, sample_rate)
             pbar.update_absolute(100)
             
-            print(f"[Music_NoiseRemove] ✅ Noise removed successfully!")
+            print("[Music_NoiseRemove] Noise removed successfully.")
             print(f"[Music_NoiseRemove] Mode: {mode} | Intensity: {intensity}\n")
             return (result,)
         except Exception as e:
@@ -127,6 +130,55 @@ class Music_NoiseRemove:
             traceback.print_exc()
             # Return original audio if processing fails
             return (audio,)
+
+
+class Music_AudioRepair:
+    """Repair isolated clicks, short clipping plateaus, invalid samples, and DC offset."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "audio": ("AUDIO",),
+                "mode": (list(REPAIR_MODES), {"default": "Auto (All)"}),
+                "sensitivity": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "display": "slider",
+                }),
+                "clip_threshold_dbfs": ("FLOAT", {
+                    "default": -1.0, "min": -18.0, "max": -0.01, "step": 0.1,
+                }),
+                "max_click_ms": ("FLOAT", {
+                    "default": 0.5, "min": 0.05, "max": 3.0, "step": 0.05,
+                }),
+                "max_clip_ms": ("FLOAT", {
+                    "default": 10.0, "min": 0.2, "max": 30.0, "step": 0.2,
+                }),
+                "output_ceiling_dbfs": ("FLOAT", {
+                    "default": -1.0, "min": -12.0, "max": -0.01, "step": 0.1,
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO", "STRING")
+    RETURN_NAMES = ("AUDIO", "REPAIR_REPORT")
+    FUNCTION = "repair"
+    CATEGORY = "music"
+
+    def repair(self, audio, mode, sensitivity, clip_threshold_dbfs, max_click_ms,
+               max_clip_ms, output_ceiling_dbfs):
+        audio_np, sample_rate = audio_to_numpy(audio, allow_nonfinite=True)
+        processed, report = repair_audio(
+            audio_np,
+            sample_rate=sample_rate,
+            mode=mode,
+            sensitivity=sensitivity,
+            clip_threshold_dbfs=clip_threshold_dbfs,
+            max_click_ms=max_click_ms,
+            max_clip_ms=max_clip_ms,
+            output_ceiling_dbfs=output_ceiling_dbfs,
+        )
+        return (numpy_to_audio_tensor(processed, sample_rate), report)
 
 
 class Music_AudioUpscale:
@@ -185,11 +237,14 @@ class Music_AudioUpscale:
             pbar.update_absolute(90)
             
             # Restore if requested
+            output_sample_rate = target_sample_rate
             if restore_original_sr:
                 upscaled = restore_frequency(upscaled, sample_rate, target_sample_rate, target_sample_rate)
+                output_sample_rate = sample_rate
             
             # Convert back to dict
-            result = numpy_to_audio_tensor(upscaled, sample_rate)
+            result = numpy_to_audio_tensor(upscaled, output_sample_rate)
+            pbar.update_absolute(100)
             
             return (result,)
         except Exception as e:
@@ -243,10 +298,7 @@ class Music_StereoEnhance:
             # Convert to numpy
             audio_np, sample_rate = audio_to_numpy(audio)
             
-            # Ensure stereo
-            if audio_np.shape[1] == 1:
-                # Convert mono to stereo
-                audio_np = np.stack([audio_np[:, 0], audio_np[:, 0]], axis=1)
+            audio_np = ensure_stereo(audio_np)
             
             # Apply enhancement
             enhanced = enhance_stereo(audio_np, intensity)
@@ -279,7 +331,7 @@ class Music_LufsNormalizer:
                 "target_lufs": ("FLOAT", {
                     "default": -14.0,
                     "min": -60.0,
-                    "max": 0.0,
+                    "max": -5.0,
                     "step": 1.0,
                     "display": "slider",
                 }),
@@ -315,7 +367,8 @@ class Music_LufsNormalizer:
             # Convert back to dict
             result = numpy_to_audio_tensor(processed, sample_rate)
             
-            return (result, float(current_lufs))
+            reported_lufs = float(current_lufs) if np.isfinite(current_lufs) else -120.0
+            return (result, reported_lufs)
         except Exception as e:
             print(f"Error in Music_LufsNormalizer: {e}")
             import traceback
@@ -635,7 +688,10 @@ class Music_AudioMixer:
             audio_np_1, sr1 = audio_to_numpy(audio_1)
             audio_np_2, sr2 = audio_to_numpy(audio_2)
             
-            # Mix (use first sample rate)
+            # Resample the second input before combining sample indices.
+            if sr2 != sr1:
+                audio_np_2 = upscale_audio(audio_np_2, sr1, sr2)
+
             processed = mix_audio(audio_np_1, audio_np_2)
             
             # Convert back to dict
@@ -858,13 +914,32 @@ class Music_StemRecombination:
             others_np, sr_others = audio_to_numpy(others)
             pbar.update_absolute(30)
             
-            # Create stems dictionary
-            stems_dict = {
+            # Resample every stem to the vocals sample rate before mixing.
+            sample_rates = {
+                "vocals": sr_vocals,
+                "drums": sr_drums,
+                "bass": sr_bass,
+                "music": sr_music,
+                "others": sr_others,
+            }
+            arrays = {
                 "vocals": vocals_np,
                 "drums": drums_np,
                 "bass": bass_np,
                 "music": music_np,
                 "others": others_np,
+            }
+            for stem_name, stem_rate in sample_rates.items():
+                if stem_rate != sr_vocals:
+                    arrays[stem_name] = upscale_audio(arrays[stem_name], sr_vocals, stem_rate)
+
+            # Create stems dictionary
+            stems_dict = {
+                "vocals": arrays["vocals"],
+                "drums": arrays["drums"],
+                "bass": arrays["bass"],
+                "music": arrays["music"],
+                "others": arrays["others"],
             }
             
             # Create weights dictionary
@@ -964,9 +1039,9 @@ class Music_MasterAudioEnhancement:
                 }),
                 # Loudness normalization (LUFS)
                 "target_loudness": ("FLOAT", {
-                    "default": -6.0,
+                    "default": -14.0,
                     "min": -30.0,
-                    "max": 0.0,
+                    "max": -5.0,
                     "step": 1.0,
                     "display": "slider",
                 }),
@@ -1048,16 +1123,19 @@ class Music_MasterAudioEnhancement:
             
             # Process audio directly (no stem separation)
             print("[Master Audio] Processing audio (this will show detailed progress)...")
-            audio_np = process_audio_stems(
-                audio_np, sample_rate,
-                eq_low_gain, eq_mid_gain, eq_high_gain,
-                clarity_amount, target_loudness,
-                denoise_mode, denoise_intensity,
-                ai_enhance, ai_mix,
-                vocal_enhance, deesser_amount, breath_smooth, reverb_amount, naturalize_vocal
-            )
+            processed_batches = []
+            for batch in audio_np:
+                processed_batches.append(process_audio_stems(
+                    batch, sample_rate,
+                    eq_low_gain, eq_mid_gain, eq_high_gain,
+                    clarity_amount, target_loudness,
+                    denoise_mode, denoise_intensity,
+                    ai_enhance, ai_mix,
+                    vocal_enhance, deesser_amount, breath_smooth, reverb_amount, naturalize_vocal
+                ))
+            audio_np = np.stack(processed_batches, axis=0)
             pbar.update_absolute(95)
-            print("[Master Audio] ✓ Processing complete!")
+            print("[Master Audio] Processing complete.")
             
             # Convert back to dict
             result = numpy_to_audio_tensor(audio_np, sample_rate)
@@ -1069,3 +1147,33 @@ class Music_MasterAudioEnhancement:
             import traceback
             traceback.print_exc()
             return (audio,)
+
+
+class Music_Fix:
+    """Apply a conservative finishing chain selected by musical genre."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "audio": ("AUDIO",),
+                "genre": (list(GENRE_OPTIONS), {"default": "General / Balanced"}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    RETURN_NAMES = ("AUDIO",)
+    FUNCTION = "fix"
+    CATEGORY = "music"
+    DESCRIPTION = (
+        "Applies a conservative genre-informed finishing preset with subtle EQ, "
+        "linked compression, stereo shaping, loudness management, and peak protection."
+    )
+
+    def fix(self, audio, genre):
+        try:
+            audio_np, sample_rate = audio_to_numpy(audio)
+            processed = apply_genre_finish(audio_np, sample_rate, genre)
+            return (numpy_to_audio_tensor(processed, sample_rate),)
+        except Exception as error:
+            raise RuntimeError(f"Music Fix failed for preset '{genre}': {error}") from error

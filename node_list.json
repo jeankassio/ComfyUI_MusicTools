@@ -1,98 +1,77 @@
-[
-  [
-    "Music_MasterAudioEnhancement",
-    {
-      "title": "Master Audio Enhancement",
-      "description": "Complete professional mastering chain with AI enhancement, vocal naturalizer, multiband compression, EQ, and LUFS normalization. Perfect for AI vocals.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_NoiseRemove",
-    {
-      "title": "Noise Removal",
-      "description": "Professional noise reduction with two modes: Hiss-only (safe for music) or Full denoise.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_AudioUpscale",
-    {
-      "title": "Audio Upscale",
-      "description": "Sample rate upscaling from 16kHz to 192kHz with frequency restoration.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_StereoEnhance",
-    {
-      "title": "Stereo Enhance",
-      "description": "Stereo widening and imaging enhancement.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_LufsNormalizer",
-    {
-      "title": "LUFS Normalizer",
-      "description": "Industry-standard loudness normalization (ITU-R BS.1770-4). Supports streaming, broadcast, and CD standards.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_Equalize",
-    {
-      "title": "3-Band EQ",
-      "description": "Parametric 3-band equalizer (bass, mid, treble) with ±12dB control.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_Reverb",
-    {
-      "title": "Reverb",
-      "description": "Algorithmic reverb effect with configurable room size and wet/dry mix.",
-      "category": "audio/effects"
-    }
-  ],
-  [
-    "Music_Compressor",
-    {
-      "title": "Compressor",
-      "description": "Dynamic range compression with configurable ratio, threshold, attack, and release.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_Gain",
-    {
-      "title": "Gain",
-      "description": "Simple volume adjustment from -24dB to +24dB.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_AudioMixer",
-    {
-      "title": "Audio Mixer",
-      "description": "Mix two audio streams with crossfade control.",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_StemSeparation",
-    {
-      "title": "Stem Separation",
-      "description": "Extract vocals, drums, bass, and other stems using AI models (Demucs/Spleeter).",
-      "category": "audio/processing"
-    }
-  ],
-  [
-    "Music_StemRecombination",
-    {
-      "title": "Stem Recombination",
-      "description": "Recombine separated stems with individual volume control for each stem.",
-      "category": "audio/processing"
-    }
-  ]
-]
+{
+  "Music_MasterAudioEnhancement": {
+    "title": "Master Audio Enhancement",
+    "description": "Configurable DSP mastering chain with optional speech enhancement, EQ, dynamics, stereo shaping, loudness management, and peak limiting.",
+    "category": "music"
+  },
+  "Music_Fix": {
+    "title": "Music Fix",
+    "description": "Conservative genre-informed finishing presets with subtle EQ, linked compression, stereo shaping, loudness management, and peak protection.",
+    "category": "music"
+  },
+  "Music_AudioRepair": {
+    "title": "Audio Repair",
+    "description": "Repairs short clipping plateaus, isolated clicks, invalid samples, and DC offset before mastering.",
+    "category": "music"
+  },
+  "Music_NoiseRemove": {
+    "title": "Noise Removal",
+    "description": "High-frequency hiss reduction or full stationary noise reduction.",
+    "category": "music"
+  },
+  "Music_AudioUpscale": {
+    "title": "Audio Resample",
+    "description": "Band-limited sample-rate conversion from 16 kHz to 192 kHz. Resampling does not recreate missing source detail.",
+    "category": "music"
+  },
+  "Music_StereoEnhance": {
+    "title": "Stereo Enhance",
+    "description": "Mid/side stereo widening with mono-to-stereo channel handling.",
+    "category": "music"
+  },
+  "Music_LufsNormalizer": {
+    "title": "LUFS Normalizer",
+    "description": "Integrated loudness measurement and normalization using ITU-R BS.1770 when pyloudnorm is available.",
+    "category": "music"
+  },
+  "Music_Equalize": {
+    "title": "3-Band EQ",
+    "description": "Three-band peaking equalizer with validated Nyquist-safe frequencies.",
+    "category": "music"
+  },
+  "Music_Reverb": {
+    "title": "Reverb",
+    "description": "Lightweight multi-tap ambience effect.",
+    "category": "music"
+  },
+  "Music_Compressor": {
+    "title": "Compressor",
+    "description": "Stereo-linked dynamic range compression with threshold and ratio controls.",
+    "category": "music"
+  },
+  "Music_Gain": {
+    "title": "Gain",
+    "description": "Exact linear gain adjustment from -24 dB to +24 dB.",
+    "category": "music"
+  },
+  "Music_AudioMixer": {
+    "title": "Audio Mixer",
+    "description": "Mixes two tracks with sample-rate conversion, mono/stereo matching, and duration padding.",
+    "category": "music"
+  },
+  "Music_AudioTrimmer": {
+    "title": "Audio Trimmer",
+    "description": "Extracts a validated time range while preserving batch and channel layout.",
+    "category": "music"
+  },
+  "Music_StemSeparation": {
+    "title": "Heuristic Stem Split",
+    "description": "Fast DSP-based harmonic, percussive, bass, music, and residual split. This is not neural source separation.",
+    "category": "music"
+  },
+  "Music_StemRecombination": {
+    "title": "Stem Recombination",
+    "description": "Recombines five stems with individual levels, rate/channel matching, and safe headroom.",
+    "category": "music"
+  }
+}

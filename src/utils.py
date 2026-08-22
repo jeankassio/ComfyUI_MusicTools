@@ -2,10 +2,11 @@
 Utility functions for audio processing in ComfyUI Music Tools
 """
 
+import math
+
 import numpy as np
 import scipy.signal as signal
-from scipy.fft import fft, ifft
-import warnings
+from scipy.fft import fft
 import torch
 
 try:
@@ -15,10 +16,11 @@ except ImportError:
     HAS_NOISEREDUCE = False
 
 try:
-    import librosa
-    HAS_LIBROSA = True
+    import pyloudnorm as pyln
+    HAS_PYLOUDNORM = True
 except ImportError:
-    HAS_LIBROSA = False
+    pyln = None
+    HAS_PYLOUDNORM = False
 
 try:
     from comfy.utils import ProgressBar
@@ -27,23 +29,22 @@ except ImportError:
     HAS_PROGRESS_BAR = False
 
 
-def audio_to_numpy(audio):
+def audio_to_numpy(audio, allow_nonfinite=False):
     """
-    Convert audio from ComfyUI format to numpy array.
+    Convert audio from ComfyUI format to a canonical NumPy array.
     
     ComfyUI audio format:
     {
-        "waveform": torch.Tensor shape (channels, samples),
+        "waveform": torch.Tensor shape (batch, channels, samples),
         "sample_rate": int
     }
     
-    Note: After .squeeze(0) if batch dimension exists
-    
     Args:
         audio: Audio dict from ComfyUI
+        allow_nonfinite: Preserve NaN/Inf for a repair stage instead of rejecting them
     
     Returns:
-        tuple: (audio_numpy: np.ndarray shape [channels, samples], sample_rate: int)
+        tuple: (audio_numpy: np.ndarray shape [batch, channels, samples], sample_rate: int)
     """
     if not isinstance(audio, dict):
         raise ValueError(f"Expected dict, got {type(audio)}")
@@ -52,7 +53,9 @@ def audio_to_numpy(audio):
         raise ValueError("Audio dict must have 'waveform' and 'sample_rate' keys")
     
     waveform = audio["waveform"]
-    sample_rate = audio["sample_rate"]
+    sample_rate = int(audio["sample_rate"])
+    if sample_rate <= 0:
+        raise ValueError(f"Sample rate must be positive, got {sample_rate}")
     
     # Convert tensor to numpy
     if isinstance(waveform, torch.Tensor):
@@ -62,30 +65,26 @@ def audio_to_numpy(audio):
     else:
         raise ValueError(f"Unsupported waveform type: {type(waveform)}")
     
-    # Ensure float32
-    audio_np = audio_np.astype(np.float32)
-    
-    print(f"[audio_to_numpy] Raw shape: {audio_np.shape}")
-    
-    # Audio should be (channels, samples)
-    # Sometimes may come with batch dimension as first dim
-    if len(audio_np.shape) == 3:
-        # Shape: (batch, channels, samples) - remove batch
-        audio_np = audio_np[0]
-        print(f"[audio_to_numpy] Removed batch dimension: {audio_np.shape}")
-    elif len(audio_np.shape) == 1:
-        # Shape: (samples,) - add channel dimension
-        audio_np = audio_np[np.newaxis, :]
-        print(f"[audio_to_numpy] Added channel dimension: {audio_np.shape}")
-    
-    # Final validation: should be (channels, samples)
-    if len(audio_np.shape) != 2:
-        raise ValueError(f"Expected shape (channels, samples), got {audio_np.shape}")
-    
-    n_channels, n_samples = audio_np.shape
-    print(f"[audio_to_numpy] SUCCESS: {n_channels} channels, {n_samples} samples")
-    
-    return audio_np, sample_rate
+    # Canonical ComfyUI layout is [B, C, T]. Accept common unbatched forms too.
+    audio_np = np.asarray(audio_np, dtype=np.float32)
+    if audio_np.ndim == 1:
+        audio_np = audio_np[np.newaxis, np.newaxis, :]
+    elif audio_np.ndim == 2:
+        audio_np = audio_np[np.newaxis, :, :]
+    elif audio_np.ndim != 3:
+        raise ValueError(
+            f"Expected waveform shape [B, C, T], [C, T], or [T], got {audio_np.shape}"
+        )
+
+    if audio_np.shape[0] < 1 or audio_np.shape[1] < 1:
+        raise ValueError(f"Waveform must contain at least one batch and channel, got {audio_np.shape}")
+    if not allow_nonfinite and not np.isfinite(audio_np).all():
+        raise ValueError("Waveform contains NaN or infinite values")
+
+    # NumPy can otherwise share storage with a CPU float32 torch tensor. Audio
+    # processors are allowed to work in-place internally, but must never mutate
+    # the AUDIO value feeding another ComfyUI branch.
+    return np.ascontiguousarray(audio_np).copy(), sample_rate
 
 
 def numpy_to_audio_tensor(audio_np, sample_rate=44100):
@@ -93,30 +92,27 @@ def numpy_to_audio_tensor(audio_np, sample_rate=44100):
     Convert numpy array back to ComfyUI audio format.
     
     Args:
-        audio_np: numpy array shape [channels, samples]
+        audio_np: NumPy array shape [B, C, T], [C, T], or [T]
         sample_rate: sample rate in Hz (default 44100)
     
     Returns:
         dict: ComfyUI audio format {"waveform": torch.Tensor (batch, channels, samples), "sample_rate": int}
     """
-    # Ensure float32
-    audio_np = audio_np.astype(np.float32)
-    
-    # Handle shape - audio_np should be (channels, samples)
-    if len(audio_np.shape) == 1:
-        # (samples,) -> (1, samples) - make it mono
-        audio_np = audio_np[np.newaxis, :]
-    
-    print(f"[numpy_to_audio_tensor] Input shape: {audio_np.shape}")
-    
-    # Convert to tensor (channels, samples)
-    audio_tensor = torch.from_numpy(audio_np)
-    
-    # Add batch dimension back: (channels, samples) -> (batch, channels, samples)
-    audio_tensor = audio_tensor.unsqueeze(0)
-    
-    print(f"[numpy_to_audio_tensor] Output shape: {audio_tensor.shape}")
-    
+    sample_rate = int(sample_rate)
+    if sample_rate <= 0:
+        raise ValueError(f"Sample rate must be positive, got {sample_rate}")
+
+    audio_np = np.asarray(audio_np, dtype=np.float32)
+    if audio_np.ndim == 1:
+        audio_np = audio_np[np.newaxis, np.newaxis, :]
+    elif audio_np.ndim == 2:
+        audio_np = audio_np[np.newaxis, :, :]
+    elif audio_np.ndim != 3:
+        raise ValueError(f"Expected audio with 1, 2, or 3 dimensions, got {audio_np.shape}")
+    if not np.isfinite(audio_np).all():
+        raise ValueError("Processed waveform contains NaN or infinite values")
+
+    audio_tensor = torch.from_numpy(np.ascontiguousarray(audio_np))
     return {
         "waveform": audio_tensor,
         "sample_rate": sample_rate
@@ -153,18 +149,31 @@ def get_progress_bar(total, label="Processing"):
 
 
 def ensure_mono(audio_data):
-    """Convert audio to mono if it's stereo. Audio shape: (channels, samples) or (samples,)"""
-    if len(audio_data.shape) > 1 and audio_data.shape[0] > 1:
-        return np.mean(audio_data, axis=0)
-    return audio_data.flatten()
+    """Convert audio to mono while preserving an optional batch dimension."""
+    audio_data = np.asarray(audio_data)
+    if audio_data.ndim == 3:
+        return np.mean(audio_data, axis=1, keepdims=True)
+    if audio_data.ndim == 2:
+        return np.mean(audio_data, axis=0, keepdims=True)
+    if audio_data.ndim == 1:
+        return audio_data[np.newaxis, :]
+    raise ValueError(f"Unsupported audio shape: {audio_data.shape}")
 
 
 def ensure_stereo(audio_data):
-    """Convert audio to stereo if it's mono. Returns shape (channels, samples)"""
-    if len(audio_data.shape) == 1 or audio_data.shape[0] == 1:
-        mono = audio_data.flatten()
-        return np.stack([mono, mono], axis=0)
-    return audio_data
+    """Duplicate mono audio to stereo, preserving an optional batch dimension."""
+    audio_data = np.asarray(audio_data)
+    if audio_data.ndim == 3:
+        if audio_data.shape[1] == 1:
+            return np.repeat(audio_data, 2, axis=1)
+        return audio_data
+    if audio_data.ndim == 2:
+        if audio_data.shape[0] == 1:
+            return np.repeat(audio_data, 2, axis=0)
+        return audio_data
+    if audio_data.ndim == 1:
+        return np.stack([audio_data, audio_data], axis=0)
+    raise ValueError(f"Unsupported audio shape: {audio_data.shape}")
 
 
 def spectral_subtraction(audio, intensity=0.5, sample_rate=44100, pbar=None):
@@ -288,42 +297,34 @@ def upscale_audio(audio, target_sr=48000, sample_rate=44100):
     Returns:
         Upscaled audio same channels, new length
     """
-    if sample_rate == target_sr:
-        return audio  # No upscaling needed
-    
-    audio = audio.astype(np.float32)
-    n_channels, n_samples = audio.shape
-    
-    # Calculate new length
-    new_length = int(n_samples * target_sr / sample_rate)
-    result = np.zeros((n_channels, new_length), dtype=np.float32)
-    
-    # Use librosa if available for better quality
-    if HAS_LIBROSA:
-        try:
-            for ch in range(n_channels):
-                result[ch, :] = librosa.resample(audio[ch, :], orig_sr=sample_rate, target_sr=target_sr)
-            return result
-        except Exception as e:
-            print(f"Warning: librosa resample failed ({e}), falling back to scipy")
-    
-    # Fallback: use scipy for resampling
-    try:
-        from scipy import signal as sp_signal  # type: ignore
-        for ch in range(n_channels):
-            result[ch, :] = sp_signal.resample(audio[ch, :], new_length)
-        return result
-    except Exception as e:
-        print(f"Warning: scipy resample failed ({e}), using linear interpolation")
-    
-    # Fallback: linear interpolation
-    indices_old = np.arange(n_samples)
-    indices_new = np.linspace(0, n_samples - 1, new_length)
-    
-    for ch in range(n_channels):
-        result[ch, :] = np.interp(indices_new, indices_old, audio[ch, :])
-    
-    return result
+    sample_rate = int(sample_rate)
+    target_sr = int(target_sr)
+    if sample_rate <= 0 or target_sr <= 0:
+        raise ValueError("Sample rates must be positive")
+
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim < 1 or audio.ndim > 3:
+        raise ValueError(f"Unsupported audio shape: {audio.shape}")
+    if sample_rate == target_sr or audio.shape[-1] == 0:
+        return audio.copy()
+
+    # Polyphase resampling is band-limited, deterministic, and handles every
+    # leading batch/channel dimension along the final time axis.
+    divisor = math.gcd(sample_rate, target_sr)
+    up = target_sr // divisor
+    down = sample_rate // divisor
+    result = signal.resample_poly(audio, up, down, axis=-1)
+
+    # resample_poly uses ceil for the output length. Enforce that documented
+    # duration exactly so all batches and downstream mixers agree.
+    expected_length = int(round(audio.shape[-1] * target_sr / sample_rate))
+    if result.shape[-1] > expected_length:
+        result = result[..., :expected_length]
+    elif result.shape[-1] < expected_length:
+        pad_width = [(0, 0)] * result.ndim
+        pad_width[-1] = (0, expected_length - result.shape[-1])
+        result = np.pad(result, pad_width)
+    return result.astype(np.float32, copy=False)
 
 
 def restore_frequency(audio, original_sr=44100, upscaled_sr=48000, current_sr=None):
@@ -341,24 +342,7 @@ def restore_frequency(audio, original_sr=44100, upscaled_sr=48000, current_sr=No
     """
     if current_sr is None:
         current_sr = upscaled_sr
-    
-    if len(audio.shape) > 1:
-        # Process stereo - shape is (channels, samples)
-        old_length = audio.shape[1]
-        new_length = int(old_length * original_sr / current_sr)
-        result = np.zeros((audio.shape[0], new_length), dtype=np.float32)
-        for ch in range(audio.shape[0]):
-            result[ch, :] = restore_frequency(audio[ch, :], original_sr, upscaled_sr, current_sr)
-        return result
-    
-    # Mono processing
-    old_length = len(audio)
-    new_length = int(old_length * original_sr / current_sr)
-    indices_old = np.arange(old_length)
-    indices_new = np.linspace(0, old_length - 1, new_length)
-    
-    restored = np.interp(indices_new, indices_old, audio.astype(np.float32))
-    return restored.astype(np.float32)
+    return upscale_audio(audio, target_sr=original_sr, sample_rate=current_sr)
 
 
 def enhance_stereo(audio, intensity=0.5):
@@ -372,18 +356,18 @@ def enhance_stereo(audio, intensity=0.5):
     Returns:
         Enhanced stereo audio shape (channels, samples)
     """
-    if len(audio.shape) == 1:
-        return audio  # Not stereo
-    
-    if audio.shape[0] != 2:
-        return audio  # Not stereo
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 3:
+        return np.stack([enhance_stereo(batch, intensity) for batch in audio], axis=0)
+    if audio.ndim != 2 or audio.shape[0] != 2 or audio.shape[-1] == 0:
+        return audio.copy()
     
     # Calculate mid and side signals
     mid = (audio[0, :] + audio[1, :]) / 2
     side = (audio[0, :] - audio[1, :]) / 2
     
     # Enhance side channel
-    side_enhanced = side * (1 + intensity)
+    side_enhanced = side * (1.0 + float(np.clip(intensity, 0.0, 2.0)))
     
     # Convert back to stereo
     left = mid + side_enhanced
@@ -395,13 +379,12 @@ def enhance_stereo(audio, intensity=0.5):
         left = left / max_val
         right = right / max_val
     
-    return np.stack([left, right], axis=0)
+    return np.stack([left, right], axis=0).astype(np.float32)
 
 
 def calculate_lufs(audio, sample_rate=44100):
     """
-    Calculate LUFS (Loudness Units relative to Full Scale) of audio.
-    Simplified implementation using RMS and frequency weighting.
+    Calculate integrated loudness using ITU-R BS.1770 when pyloudnorm is present.
     
     Args:
         audio: Audio data shape (channels, samples)
@@ -410,23 +393,45 @@ def calculate_lufs(audio, sample_rate=44100):
     Returns:
         LUFS value
     """
-    if len(audio.shape) > 1:
-        # Mix stereo to mono for LUFS calculation
-        audio = np.mean(audio, axis=0)
-    
-    # Simple LUFS approximation using RMS
-    rms = np.sqrt(np.mean(audio ** 2))
-    
-    # Reference level (-23 LUFS = 1.0 RMS)
-    if rms > 0:
-        lufs = -23 + 20 * np.log10(rms)
-    else:
-        lufs = -np.inf
-    
-    return lufs
+    audio = np.asarray(audio, dtype=np.float32)
+    sample_rate = int(sample_rate)
+    if sample_rate <= 0:
+        raise ValueError("Sample rate must be positive")
+    if audio.ndim == 3:
+        values = [calculate_lufs(batch, sample_rate) for batch in audio]
+        finite = [value for value in values if np.isfinite(value)]
+        return float(np.mean(finite)) if finite else float("-inf")
+    if audio.ndim == 1:
+        audio = audio[np.newaxis, :]
+    if audio.ndim != 2:
+        raise ValueError(f"Unsupported audio shape: {audio.shape}")
+    if audio.shape[-1] == 0 or not np.any(audio):
+        return float("-inf")
+
+    # pyloudnorm expects [samples, channels] (or a mono vector). It supports
+    # normal program material and performs K-weighting plus absolute/relative
+    # gating. Very short clips fall through to the deterministic RMS estimate.
+    if HAS_PYLOUDNORM and pyln is not None:
+        try:
+            meter_input = audio[0] if audio.shape[0] == 1 else audio.T
+            if audio.shape[0] > 5:
+                meter_input = np.mean(audio, axis=0)
+            meter = pyln.Meter(sample_rate)
+            loudness = float(meter.integrated_loudness(meter_input))
+            if np.isfinite(loudness):
+                return loudness
+        except (ValueError, RuntimeError, FloatingPointError):
+            pass
+
+    # BS.1770 uses -0.691 LKFS for a full-scale, K-weighted reference signal.
+    # This unweighted fallback is intended only for clips too short for gating.
+    mean_power = float(np.mean(np.sum(np.square(audio, dtype=np.float64), axis=0)))
+    if mean_power <= np.finfo(np.float64).tiny:
+        return float("-inf")
+    return float(-0.691 + 10.0 * np.log10(mean_power))
 
 
-def normalize_to_lufs(audio, target_lufs=-14, sample_rate=44100):
+def normalize_to_lufs(audio, target_lufs=-14, sample_rate=44100, peak_ceiling_db=-1.0):
     """
     Normalize audio to target LUFS.
     
@@ -438,23 +443,40 @@ def normalize_to_lufs(audio, target_lufs=-14, sample_rate=44100):
     Returns:
         LUFS-normalized audio
     """
-    current_lufs = calculate_lufs(audio, sample_rate)
-    
-    if current_lufs == -np.inf or np.isnan(current_lufs):
-        return audio
-    
-    # Calculate gain needed
-    gain_db = target_lufs - current_lufs
-    gain_linear = 10 ** (gain_db / 20)
-    
-    # Apply gain and prevent clipping
-    normalized = audio * gain_linear
-    max_val = np.abs(normalized).max()
-    
-    if max_val > 1.0:
-        normalized = normalized / max_val
-    
-    return normalized.astype(np.float32)
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 3:
+        return np.stack(
+            [normalize_to_lufs(batch, target_lufs, sample_rate, peak_ceiling_db) for batch in audio],
+            axis=0,
+        )
+    if audio.ndim == 1:
+        work = audio[np.newaxis, :]
+        remove_channel = True
+    elif audio.ndim == 2:
+        work = audio
+        remove_channel = False
+    else:
+        raise ValueError(f"Unsupported audio shape: {audio.shape}")
+    if work.shape[-1] == 0:
+        return audio.copy()
+
+    current_lufs = calculate_lufs(work, sample_rate)
+    if not np.isfinite(current_lufs):
+        return audio.copy()
+
+    gain_linear = 10.0 ** ((float(target_lufs) - current_lufs) / 20.0)
+    normalized = work * gain_linear
+
+    # LUFS gain can request impossible loudness for highly dynamic material.
+    # Keep a safe sample-peak ceiling; the standalone true-peak limiter can be
+    # placed after this node when strict dBTP delivery is required.
+    ceiling = 10.0 ** (float(peak_ceiling_db) / 20.0)
+    peak = float(np.max(np.abs(normalized)))
+    if peak > ceiling > 0.0:
+        normalized *= ceiling / peak
+
+    normalized = normalized.astype(np.float32, copy=False)
+    return normalized[0] if remove_channel else normalized
 
 
 def apply_eq(audio, frequencies, gains, sample_rate=44100):
@@ -470,12 +492,14 @@ def apply_eq(audio, frequencies, gains, sample_rate=44100):
     Returns:
         Equalized audio shape (channels, samples)
     """
-    if len(audio.shape) > 1:
-        # Process stereo
-        result = np.zeros_like(audio)
-        for ch in range(audio.shape[0]):
-            result[ch, :] = apply_eq(audio[ch, :], frequencies, gains, sample_rate)
-        return result
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        return np.stack(
+            [apply_eq(channel, frequencies, gains, sample_rate) for channel in audio],
+            axis=0,
+        )
+    if audio.size == 0:
+        return audio.copy()
     
     # Mono processing
     result = audio.copy().astype(np.float32)
@@ -484,8 +508,10 @@ def apply_eq(audio, frequencies, gains, sample_rate=44100):
         if gain_db == 0:
             continue
         
-        # Design IIR filter
-        gain_linear = 10 ** (gain_db / 20)
+        nyquist = sample_rate / 2.0
+        freq = float(np.clip(freq, 1.0, nyquist * 0.98))
+        gain_db = float(np.clip(gain_db, -24.0, 24.0))
+        A = 10.0 ** (gain_db / 40.0)
         Q = 1.0
         
         # Peaking filter coefficients
@@ -494,21 +520,21 @@ def apply_eq(audio, frequencies, gains, sample_rate=44100):
         cos_w0 = np.cos(w0)
         alpha = sin_w0 / (2 * Q)
         
-        b0 = 1 + alpha * gain_linear
+        b0 = 1 + alpha * A
         b1 = -2 * cos_w0
-        b2 = 1 - alpha * gain_linear
-        a0 = 1 + alpha / gain_linear
+        b2 = 1 - alpha * A
+        a0 = 1 + alpha / A
         a1 = -2 * cos_w0
-        a2 = 1 - alpha / gain_linear
+        a2 = 1 - alpha / A
         
         # Normalize coefficients
         b = np.array([b0/a0, b1/a0, b2/a0])
         a = np.array([1.0, a1/a0, a2/a0])
         
-        # Apply filter
-        result = signal.filtfilt(b, a, result)
+        # A causal biquad also works on very short clips, unlike filtfilt.
+        result = signal.lfilter(b, a, result)
     
-    return result
+    return result.astype(np.float32)
 
 
 def apply_reverb(audio, decay=0.5, sample_rate=44100):
@@ -523,14 +549,18 @@ def apply_reverb(audio, decay=0.5, sample_rate=44100):
     Returns:
         Reverbed audio shape (channels, samples)
     """
-    if len(audio.shape) > 1:
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
         # Process stereo
         result = np.zeros_like(audio)
         for ch in range(audio.shape[0]):
             result[ch, :] = apply_reverb(audio[ch, :], decay, sample_rate)
         return result
     
-    # Mono processing - simple Schroeder reverberator
+    if audio.size == 0 or decay <= 0.0:
+        return audio.copy()
+
+    # Mono processing - simple multi-tap reverberator
     delay_times = [0.029, 0.031, 0.037, 0.041]  # In seconds
     delay_samples = [int(dt * sample_rate) for dt in delay_times]
     
@@ -553,7 +583,14 @@ def apply_reverb(audio, decay=0.5, sample_rate=44100):
     return result
 
 
-def apply_compression(audio, threshold=0.5, ratio=4.0, sample_rate=44100):
+def apply_compression(
+    audio,
+    threshold=0.5,
+    ratio=4.0,
+    sample_rate=44100,
+    attack_ms=5.0,
+    release_ms=80.0,
+):
     """
     Apply dynamic range compression.
     
@@ -562,25 +599,64 @@ def apply_compression(audio, threshold=0.5, ratio=4.0, sample_rate=44100):
         threshold: Compression threshold (0-1)
         ratio: Compression ratio
         sample_rate: Sample rate
+        attack_ms: Detector attack time in milliseconds
+        release_ms: Gain recovery time in milliseconds
     
     Returns:
         Compressed audio shape (channels, samples)
     """
-    if len(audio.shape) > 1:
-        # Process stereo
-        result = np.zeros_like(audio)
-        for ch in range(audio.shape[0]):
-            result[ch, :] = apply_compression(audio[ch, :], threshold, ratio, sample_rate)
-        return result
-    
-    # Mono processing
-    result = audio.copy().astype(np.float32)
-    
-    # Apply compression
-    mask = np.abs(result) > threshold
-    result[mask] = np.sign(result[mask]) * (threshold + (np.abs(result[mask]) - threshold) / ratio)
-    
-    return result
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 3:
+        return np.stack(
+            [
+                apply_compression(
+                    batch, threshold, ratio, sample_rate, attack_ms, release_ms
+                )
+                for batch in audio
+            ],
+            axis=0,
+        )
+    if audio.ndim == 1:
+        work = audio[np.newaxis, :]
+        remove_channel = True
+    elif audio.ndim == 2:
+        work = audio
+        remove_channel = False
+    else:
+        raise ValueError(f"Unsupported audio shape: {audio.shape}")
+    if work.shape[-1] == 0 or ratio <= 1.0:
+        return audio.copy()
+
+    # A linked peak detector preserves the stereo image. Gain is computed in
+    # dB with causal attack/release envelopes, avoiding the waveshaping
+    # distortion caused by compressing individual samples.
+    threshold = float(np.clip(threshold, 1e-4, 1.0))
+    ratio = max(float(ratio), 1.0)
+    detector = np.max(np.abs(work), axis=0)
+    attack_samples = max(1.0, float(attack_ms) * sample_rate / 1000.0)
+    attack_alpha = float(np.exp(-1.0 / attack_samples))
+    envelope, _ = signal.lfilter(
+        [1.0 - attack_alpha],
+        [1.0, -attack_alpha],
+        detector,
+        zi=[attack_alpha * detector[0]],
+    )
+    level_db = 20.0 * np.log10(np.maximum(envelope, 1e-12))
+    threshold_db = 20.0 * np.log10(threshold)
+    gain_db = -np.maximum(level_db - threshold_db, 0.0) * (1.0 - 1.0 / ratio)
+    desired_gain = np.power(10.0, gain_db / 20.0).astype(np.float32)
+
+    release_samples = max(1.0, float(release_ms) * sample_rate / 1000.0)
+    alpha = float(np.exp(-1.0 / release_samples))
+    smoothed, _ = signal.lfilter(
+        [1.0 - alpha],
+        [1.0, -alpha],
+        desired_gain,
+        zi=[alpha * desired_gain[0]],
+    )
+    gain = np.minimum(smoothed, desired_gain).astype(np.float32)
+    result = (work * gain[np.newaxis, :]).astype(np.float32)
+    return result[0] if remove_channel else result
 
 
 def apply_gain(audio, gain_db=0):
@@ -595,14 +671,7 @@ def apply_gain(audio, gain_db=0):
         Audio with applied gain
     """
     gain_linear = 10 ** (gain_db / 20)
-    result = audio * gain_linear
-    
-    # Prevent clipping
-    max_val = np.abs(result).max()
-    if max_val > 1.0:
-        result = result / max_val
-    
-    return result.astype(np.float32)
+    return (np.asarray(audio, dtype=np.float32) * gain_linear).astype(np.float32)
 
 
 def mix_audio(*audio_samples):
@@ -618,28 +687,46 @@ def mix_audio(*audio_samples):
     if not audio_samples:
         raise ValueError("At least one audio sample is required")
     
-    # Get common length (using shape[1] which is samples for (channels, samples))
-    min_length = min(audio.shape[1] if len(audio.shape) > 1 else len(audio) for audio in audio_samples)
-    n_channels = audio_samples[0].shape[0] if len(audio_samples[0].shape) > 1 else 1
-    
-    # Mix
-    result = np.zeros((n_channels, min_length), dtype=np.float32)
-    
-    for audio in audio_samples:
-        if len(audio.shape) > 1:
-            result[:, :] += audio[:, :min_length]
-        else:
-            if len(result.shape) > 1:
-                result[0, :] += audio[:min_length]
-            else:
-                result[:] += audio[:min_length]
-    
-    # Normalize
-    max_val = np.abs(result).max()
-    if max_val > 1.0:
-        result = result / max_val
-    
-    return result.astype(np.float32)
+    original_ndim = max(np.asarray(item).ndim for item in audio_samples)
+
+    def canonical(item):
+        item = np.asarray(item, dtype=np.float32)
+        if item.ndim == 1:
+            return item[np.newaxis, np.newaxis, :]
+        if item.ndim == 2:
+            return item[np.newaxis, :, :]
+        if item.ndim == 3:
+            return item
+        raise ValueError(f"Unsupported audio shape: {item.shape}")
+
+    canonical_audio = [canonical(item) for item in audio_samples]
+    batch_count = max(item.shape[0] for item in canonical_audio)
+    channel_count = max(item.shape[1] for item in canonical_audio)
+    output_length = max(item.shape[-1] for item in canonical_audio)
+    result = np.zeros((batch_count, channel_count, output_length), dtype=np.float32)
+
+    for item in canonical_audio:
+        if item.shape[0] == 1 and batch_count > 1:
+            item = np.repeat(item, batch_count, axis=0)
+        elif item.shape[0] != batch_count:
+            raise ValueError("Audio batch sizes must match or be broadcastable from one")
+        if item.shape[1] == 1 and channel_count > 1:
+            item = np.repeat(item, channel_count, axis=1)
+        elif item.shape[1] != channel_count:
+            raise ValueError("Audio channel counts must match or be mono")
+        result[..., :item.shape[-1]] += item
+
+    if result.size:
+        # Batch items are independent ComfyUI values. A hot item must not turn
+        # down another item merely because they share the same tensor.
+        peaks = np.max(np.abs(result), axis=(1, 2), keepdims=True)
+        result /= np.maximum(peaks, 1.0)
+
+    if original_ndim == 1:
+        return result[0, 0]
+    if original_ndim == 2:
+        return result[0]
+    return result
 
 
 def trim_audio(audio, start_time=0, end_time=None, sample_rate=44100):
@@ -655,17 +742,17 @@ def trim_audio(audio, start_time=0, end_time=None, sample_rate=44100):
     Returns:
         Trimmed audio shape (channels, samples)
     """
-    start_sample = int(start_time * sample_rate)
-    
-    if end_time is None:
-        end_sample = audio.shape[1] if len(audio.shape) > 1 else len(audio)
-    else:
-        end_sample = int(end_time * sample_rate)
-    
-    if len(audio.shape) > 1:
-        return audio[:, start_sample:end_sample].astype(np.float32)
-    else:
-        return audio[start_sample:end_sample].astype(np.float32)
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim < 1 or audio.ndim > 3:
+        raise ValueError(f"Unsupported audio shape: {audio.shape}")
+    total_samples = audio.shape[-1]
+    start_sample = int(round(float(start_time) * sample_rate))
+    end_sample = total_samples if end_time is None else int(round(float(end_time) * sample_rate))
+    start_sample = max(0, min(start_sample, total_samples))
+    end_sample = max(0, min(end_sample, total_samples))
+    if start_sample >= end_sample:
+        raise ValueError("Start time must be before end time and inside the audio duration")
+    return audio[..., start_sample:end_sample].astype(np.float32, copy=True)
 
 
 def separate_stems(audio, separation_type="vocals", sample_rate=44100):
@@ -799,6 +886,29 @@ def separate_all_stems(audio, sample_rate=44100):
         Dictionary with stems: vocals, drums, bass, music, others
         All stems normalized individually to peak ~1.0
     """
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 3:
+        separated_batches = [separate_all_stems(batch, sample_rate) for batch in audio]
+        return {
+            name: np.stack([batch[name] for batch in separated_batches], axis=0)
+            for name in ("vocals", "drums", "bass", "music", "others")
+        }
+    if audio.ndim not in (1, 2):
+        raise ValueError(f"Unsupported audio shape: {audio.shape}")
+
+    # Very short clips do not contain enough context for STFT/median masks.
+    # Preserve them losslessly in the music stem instead of failing with a
+    # negative frame count.
+    if audio.shape[-1] < 2048:
+        zeros = np.zeros_like(audio, dtype=np.float32)
+        return {
+            "vocals": zeros.copy(),
+            "drums": zeros.copy(),
+            "bass": zeros.copy(),
+            "music": audio.copy(),
+            "others": zeros.copy(),
+        }
+
     # Extract each stem separately using STFT-based approach
     # WITHOUT normalizing individual stems (keep linear scale)
     # Then calculate others as residual
@@ -867,8 +977,10 @@ def separate_all_stems(audio, sample_rate=44100):
                 mask = mask * 0.5 + onset_mask.astype(float) * 0.5
             elif stem_type in ["vocals", "music"]:
                 harmonic = signal.medfilt(magnitude, kernel_size=(11, 1))
-                mask = harmonic / (magnitude + 1e-10)
-                mask = np.clip(mask, 0, 1)
+                harmonic_mask = np.clip(harmonic / (magnitude + 1e-10), 0, 1)
+                # Keep the frequency range selected above. The old assignment
+                # replaced it, making the vocals and music outputs identical.
+                mask *= harmonic_mask
             
             # Apply mask and inverse STFT
             separated_magnitude = magnitude * mask
@@ -896,20 +1008,15 @@ def separate_all_stems(audio, sample_rate=44100):
     for stem_type in ["vocals", "drums", "bass", "music"]:
         others = others - stems_unnormalized[stem_type]
     
-    # Now normalize all stems including others
-    def normalize_stem(stem):
-        """Normalize stem to peak ~1.0"""
-        max_val = np.abs(stem).max()
-        if max_val > 1e-10:
-            return stem / max_val
-        return stem.astype(np.float32)
-    
+    # Keep every stem on the original linear scale. Independent peak
+    # normalization destroyed their balance and made unity recombination
+    # impossible. The residual guarantees that all five stems sum to input.
     stems = {
-        "vocals": normalize_stem(stems_unnormalized["vocals"]).astype(np.float32),
-        "drums": normalize_stem(stems_unnormalized["drums"]).astype(np.float32),
-        "bass": normalize_stem(stems_unnormalized["bass"]).astype(np.float32),
-        "music": normalize_stem(stems_unnormalized["music"]).astype(np.float32),
-        "others": normalize_stem(others).astype(np.float32),
+        "vocals": stems_unnormalized["vocals"].astype(np.float32),
+        "drums": stems_unnormalized["drums"].astype(np.float32),
+        "bass": stems_unnormalized["bass"].astype(np.float32),
+        "music": stems_unnormalized["music"].astype(np.float32),
+        "others": others.astype(np.float32),
     }
     
     # Remove channel dimension if it was added
@@ -932,33 +1039,46 @@ def recombine_stems(stems_dict, weights=None):
     Returns:
         Recombined audio shape (channels, samples)
     """
+    if not stems_dict:
+        raise ValueError("At least one stem is required")
     if weights is None:
         weights = {stem: 1.0 for stem in stems_dict.keys()}
-    
-    # Get common length - use shape[1] for samples in (channels, samples) format
-    min_length = min(audio.shape[1] if len(audio.shape) > 1 else len(audio) for audio in stems_dict.values())
-    
-    # Get number of channels from first stem
-    first_audio = next(iter(stems_dict.values()))
-    n_channels = first_audio.shape[0] if len(first_audio.shape) > 1 else 1
-    
-    # Mix stems together
-    result = np.zeros((n_channels, min_length), dtype=np.float32)
-    
-    for stem_name, audio in stems_dict.items():
-        weight = weights.get(stem_name, 1.0)
-        if len(audio.shape) > 1:
-            result += audio[:, :min_length] * weight
-        else:
-            result[0, :] += audio[:min_length] * weight
-    
-    # Find peak value in the mixed audio
-    max_val = np.abs(result).max()
-    
-    # Normalize to prevent clipping while preserving relative dynamics
-    # If mixed result would clip, scale down; otherwise preserve loudness
-    if max_val > 1.0:
-        # Scale to just under 1.0 for safety
-        result = result / (max_val * 0.98)  # Leave 2% headroom
-    
-    return result.astype(np.float32)
+
+    original_ndim = max(np.asarray(item).ndim for item in stems_dict.values())
+
+    def canonical(item):
+        item = np.asarray(item, dtype=np.float32)
+        if item.ndim == 1:
+            return item[np.newaxis, np.newaxis, :]
+        if item.ndim == 2:
+            return item[np.newaxis, :, :]
+        if item.ndim == 3:
+            return item
+        raise ValueError(f"Unsupported stem shape: {item.shape}")
+
+    canonical_stems = {name: canonical(item) for name, item in stems_dict.items()}
+    batch_count = max(item.shape[0] for item in canonical_stems.values())
+    channel_count = max(item.shape[1] for item in canonical_stems.values())
+    output_length = max(item.shape[-1] for item in canonical_stems.values())
+    result = np.zeros((batch_count, channel_count, output_length), dtype=np.float32)
+
+    for stem_name, item in canonical_stems.items():
+        if item.shape[0] == 1 and batch_count > 1:
+            item = np.repeat(item, batch_count, axis=0)
+        elif item.shape[0] != batch_count:
+            raise ValueError("Stem batch sizes must match or be broadcastable from one")
+        if item.shape[1] == 1 and channel_count > 1:
+            item = np.repeat(item, channel_count, axis=1)
+        elif item.shape[1] != channel_count:
+            raise ValueError("Stem channel counts must match or be mono")
+        result[..., :item.shape[-1]] += item * float(weights.get(stem_name, 1.0))
+
+    if result.size:
+        peaks = np.max(np.abs(result), axis=(1, 2), keepdims=True)
+        result *= np.minimum(1.0, 0.98 / np.maximum(peaks, 1e-12))
+
+    if original_ndim == 1:
+        return result[0, 0]
+    if original_ndim == 2:
+        return result[0]
+    return result.astype(np.float32, copy=False)

@@ -33,7 +33,9 @@ def apply_deesser(audio, sample_rate=44100, sensitivity=0.5):
     
     # Fast parametric notch filter on sibilant band (5-7 kHz peak)
     # Attenuate 4-8 kHz band with steeper notch
-    center_freq = 5500 + (sensitivity * 1000)  # 5.5-6.5 kHz
+    center_freq = min(5500 + (sensitivity * 1000), sample_rate * 0.475)
+    if center_freq <= 100.0:
+        return audio
     Q_factor = 1.5 + sensitivity * 1.5  # Steeper notch for higher sensitivity
     gain_db = -(3.0 + sensitivity * 5)  # -3 to -8 dB reduction
     
@@ -138,7 +140,8 @@ def apply_vocal_reverb(audio, sample_rate=44100, reverb_amount=0.3, reverb_type=
             reverb_signal += delayed
     
     # Gentle high-frequency damping for natural reverb
-    sos_damp = signal.butter(1, 8000, btype='low', fs=sample_rate, output='sos')
+    damping_cutoff = min(8000.0, sample_rate * 0.475)
+    sos_damp = signal.butter(1, damping_cutoff, btype='low', fs=sample_rate, output='sos')
     reverb_signal = signal.sosfilt(sos_damp, reverb_signal)
     
     # Mix original with reverb
@@ -150,8 +153,10 @@ def apply_vocal_reverb(audio, sample_rate=44100, reverb_amount=0.3, reverb_type=
 
 def apply_vocal_naturalizer(audio, sample_rate=44100, amount=0.5):
     """
-    Remove robotic/auto-tune artifacts from AI-generated vocals (Ace-Step).
-    Reduces pitch quantization, adds subtle pitch variation, and humanizes timbre.
+    Soften metallic high-frequency and abrupt waveform artifacts in AI vocals.
+
+    This is a deterministic spectral smoother; it does not claim to reconstruct
+    an original pitch contour or undo pitch correction.
     
     Args:
         audio: Audio array (channels, samples) or (samples,)
@@ -171,48 +176,29 @@ def apply_vocal_naturalizer(audio, sample_rate=44100, amount=0.5):
     if amount < 0.01:
         return audio
     
+    if audio.size < 2:
+        return audio.copy()
+
     result = audio.copy()
-    
-    # 1. Add subtle pitch variation (vibrato-like) to break pitch quantization
-    # Auto-tune locks pitch too rigidly; add natural human pitch drift
-    vibrato_rate = 4.5  # Hz (natural vibrato speed)
-    vibrato_depth = 0.002 * amount  # Very subtle (0.2% pitch variation at max)
-    t = np.arange(len(audio)) / sample_rate
-    pitch_variation = np.sin(2 * np.pi * vibrato_rate * t) * vibrato_depth
-    
-    # Apply pitch variation via phase modulation (fast approximation)
-    # Modulate the signal slightly to create pitch drift
-    phase_mod = np.cumsum(pitch_variation) * 2 * np.pi
-    modulated = audio * (1 + np.sin(phase_mod) * 0.01 * amount)
-    result = result * 0.7 + modulated * 0.3
-    
-    # 2. Add formant variation to humanize timbre
-    # Auto-tune often has locked formants; add subtle variation
-    formant_variation = np.random.randn(len(audio)) * 0.005 * amount
-    sos_formant = signal.butter(2, [200, 3000], btype='band', fs=sample_rate, output='sos')
-    formant_signal = signal.sosfilt(sos_formant, audio).astype(np.float32)
-    formant_modulated = formant_signal * (1 + formant_variation)
-    result = result + formant_modulated * 0.15 * amount
-    
-    # 3. Reduce "metallic" high-frequency artifacts (common in auto-tune)
-    # Cut harsh digital artifacts around 6-10 kHz
-    sos_metal = signal.butter(3, [6000, 10000], btype='band', fs=sample_rate, output='sos')
-    metallic = signal.sosfilt(sos_metal, audio).astype(np.float32)
-    result = result - metallic * 0.3 * amount
-    
-    # 4. Add subtle noise to mask quantization artifacts
-    # Auto-tune creates "stair-step" pitch; noise smooths it
-    noise = np.random.randn(len(audio)) * 0.002 * amount
-    sos_noise = signal.butter(2, [1000, 4000], btype='band', fs=sample_rate, output='sos')
-    shaped_noise = signal.sosfilt(sos_noise, noise).astype(np.float32)
-    result = result + shaped_noise
-    
-    # 5. Smooth abrupt pitch transitions (auto-tune artifacts)
-    # Use gentle low-pass on difference signal to smooth steps
+    nyquist = sample_rate / 2.0
+
+    # Reduce the metallic 6-10 kHz band when the source sample rate contains it.
+    metal_low = 6000.0
+    metal_high = min(10000.0, nyquist * 0.95)
+    if metal_low < metal_high:
+        sos_metal = signal.butter(
+            3, [metal_low, metal_high], btype="bandpass", fs=sample_rate, output="sos"
+        )
+        metallic = signal.sosfilt(sos_metal, audio).astype(np.float32)
+        result -= metallic * (0.3 * amount)
+
+    # Smooth only a small portion of abrupt sample-to-sample changes. This is
+    # intentionally subtle so consonants and drum transients in a full mix are
+    # not erased.
     diff = np.diff(result, prepend=result[0])
     sos_smooth = signal.butter(1, 50, btype='low', fs=sample_rate, output='sos')
     smoothed_diff = signal.sosfilt(sos_smooth, diff).astype(np.float32)
-    smooth_blend = 0.4 * amount
+    smooth_blend = 0.15 * amount
     result = result - diff * smooth_blend + smoothed_diff * smooth_blend
     
     # Normalize to prevent clipping

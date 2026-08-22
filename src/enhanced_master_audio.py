@@ -9,36 +9,14 @@ from scipy import signal
 import os
 import tempfile
 
-# Optional dependencies (lazy imported)
-try:
-    import torch
-except ImportError:
-    torch = None
-
-try:
-    import torchaudio
-    if not hasattr(torchaudio, "list_audio_backends"):
-        # Older torchaudio builds may miss this API; provide a safe stub
-        torchaudio.list_audio_backends = lambda: ["sox_io"]
-    TORCHAUDIO_AVAILABLE = True
-except Exception as e:
-    torchaudio = None
-    TORCHAUDIO_AVAILABLE = False
-    print(f"[AI Enhance] torchaudio unavailable: {e}")
-
-try:
-    if TORCHAUDIO_AVAILABLE and torch is not None:
-        from speechbrain.pretrained import SpectralMaskEnhancement
-        SPEECHBRAIN_AVAILABLE = True
-    else:
-        SPEECHBRAIN_AVAILABLE = False
-        if torch is None:
-            print("[AI Enhance] torch not available; skipping SpeechBrain load")
-        else:
-            print("[AI Enhance] torchaudio not available; skipping SpeechBrain load")
-except Exception as e:
-    SPEECHBRAIN_AVAILABLE = False
-    print(f"[AI Enhance] SpeechBrain unavailable: {e}")
+# Heavy AI dependencies are imported only if ai_enhance is enabled. This keeps
+# normal DSP nodes fast to load and avoids startup failures from a mismatched
+# torch/torchaudio/SpeechBrain installation.
+torch = None
+torchaudio = None
+SpectralMaskEnhancement = None
+TORCHAUDIO_AVAILABLE = False
+SPEECHBRAIN_AVAILABLE = False
 
 try:
     import noisereduce as nr
@@ -54,11 +32,17 @@ except Exception:
     snapshot_download = None
     HF_SNAPSHOT_AVAILABLE = False
 
-# Local model directory (ComfyUI/models/MusicEnhance)
-# Go up 3 levels: src/ -> ComfyUI_MusicTools/ -> custom_nodes/ -> ComfyUI/
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-MODEL_DIR = os.path.join(BASE_DIR, "models", "MusicEnhance")
-os.makedirs(MODEL_DIR, exist_ok=True)
+def _get_model_dir():
+    """Resolve the model cache lazily, without filesystem writes at import."""
+    try:
+        import folder_paths
+
+        models_root = folder_paths.models_dir
+    except ImportError:
+        models_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+    model_dir = os.path.join(models_root, "MusicEnhance")
+    os.makedirs(model_dir, exist_ok=True)
+    return model_dir
 
 _METRICGAN_ENHANCER = None
 
@@ -135,40 +119,22 @@ def apply_denoise_simple(audio, sample_rate=44100, intensity=0.5):
         return audio
     
     try:
-        # noisereduce expects (samples,) or (samples, channels) format
-        # but we have (channels, samples)
-        if len(audio.shape) > 1:
-            # Transpose from (channels, samples) to (samples, channels)
-            audio_transposed = audio.T
-            
-            # Apply noisereduce with stationary mode
-            # prop_decrease controls aggressiveness: 0-1, higher = more aggressive
-            # We scale intensity to prop_decrease (0.5-1.0 range for safety)
-            prop_decrease = 0.5 + (intensity * 0.5)  # 0.5 at intensity=0, 1.0 at intensity=1
-            
-            reduced = nr.reduce_noise(
-                y=audio_transposed,
-                sr=sample_rate,
-                stationary=True,
-                prop_decrease=prop_decrease,
-                freq_mask_smooth_hz=500,  # Smooth frequency masking
-                time_mask_smooth_ms=50    # Smooth time masking
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            return np.stack(
+                [apply_denoise_simple(item, sample_rate, intensity) for item in audio],
+                axis=0,
             )
-            
-            # Transpose back to (channels, samples)
-            return reduced.T.astype(np.float32)
-        else:
-            # Single channel
-            prop_decrease = 0.5 + (intensity * 0.5)
-            reduced = nr.reduce_noise(
-                y=audio,
-                sr=sample_rate,
-                stationary=True,
-                prop_decrease=prop_decrease,
-                freq_mask_smooth_hz=500,
-                time_mask_smooth_ms=50
-            )
-            return reduced.astype(np.float32)
+
+        reduced = nr.reduce_noise(
+            y=audio,
+            sr=sample_rate,
+            stationary=True,
+            prop_decrease=float(np.clip(intensity, 0.0, 1.0)),
+            freq_mask_smooth_hz=500,
+            time_mask_smooth_ms=50,
+        )
+        return reduced.astype(np.float32)
             
     except Exception as e:
         print(f"[Denoise] Error with noisereduce: {e}, returning original audio")
@@ -177,28 +143,44 @@ def apply_denoise_simple(audio, sample_rate=44100, intensity=0.5):
 
 def _load_metricgan_enhancer():
     """Load SpeechBrain MetricGAN+ model into MusicEnhance cache dir."""
-    global _METRICGAN_ENHANCER
+    global _METRICGAN_ENHANCER, torch, torchaudio
+    global SpectralMaskEnhancement, TORCHAUDIO_AVAILABLE, SPEECHBRAIN_AVAILABLE
 
     if _METRICGAN_ENHANCER is not None:
         return _METRICGAN_ENHANCER
 
-    if not SPEECHBRAIN_AVAILABLE or torch is None or not TORCHAUDIO_AVAILABLE:
-        print("[AI Enhance] SpeechBrain/torch/torchaudio not available; skipping MetricGAN load")
-        return None
+    if not SPEECHBRAIN_AVAILABLE:
+        try:
+            import torch as torch_module
+            import torchaudio as torchaudio_module
+
+            torch = torch_module
+            torchaudio = torchaudio_module
+            if not hasattr(torchaudio, "list_audio_backends"):
+                torchaudio.list_audio_backends = lambda: []
+            try:
+                from speechbrain.inference.enhancement import SpectralMaskEnhancement as enhancer_class
+            except ImportError:
+                from speechbrain.pretrained import SpectralMaskEnhancement as enhancer_class
+            SpectralMaskEnhancement = enhancer_class
+            TORCHAUDIO_AVAILABLE = True
+            SPEECHBRAIN_AVAILABLE = True
+        except Exception as error:
+            print(f"[AI Enhance] Optional dependencies unavailable: {error}")
+            return None
 
     try:
-        target_dir = os.path.join(MODEL_DIR, "metricgan-plus-voicebank")
+        target_dir = os.path.join(_get_model_dir(), "metricgan-plus-voicebank")
         os.makedirs(target_dir, exist_ok=True)
 
         # Prefer a copy-based download to avoid symlink permission issues on Windows
         if HF_SNAPSHOT_AVAILABLE and snapshot_download is not None:
             try:
-                snapshot_download(
+                downloaded_dir = snapshot_download(
                     repo_id="speechbrain/metricgan-plus-voicebank",
                     local_dir=target_dir,
-                    local_dir_use_symlinks=False,
-                    resume_download=True,
                 )
+                target_dir = downloaded_dir
             except Exception as dl_err:
                 print(f"[AI Enhance] snapshot_download warning: {dl_err}")
 
@@ -314,21 +296,24 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
     # STEP 0: Optional AI enhancement
     if ai_enhance:
         print("[0/3] AI ENHANCEMENT - SpeechBrain MetricGAN+")
-        print("─" * 60)
-        print(f"█░░░░░░░░░░░░░░░░░░ Enhancing with MetricGAN+ (mix {ai_mix:.2f})...", end='', flush=True)
+        print("-" * 60)
+        print(f"[AI Enhance] Processing with MetricGAN+ (mix {ai_mix:.2f})...", end='', flush=True)
         try:
             audio = apply_ai_enhance(audio, sample_rate, ai_mix)
-            print("\r" + "█" * 20 + " AI enhance complete! ✓\n")
+            if _METRICGAN_ENHANCER is None:
+                print(" skipped (optional AI stack unavailable).\n")
+            else:
+                print(" done.\n")
         except Exception as e:
-            print(f"\r⚠ AI Enhance failed: {e}\n")
+            print(f" failed: {e}\n")
     else:
         print("[0/3] AI ENHANCEMENT - Skipped\n")
 
     # STEP 1: DENOISE (if enabled)
     if denoise_mode != "Off" and denoise_intensity > 0.01:
         print(f"[1/3] DENOISING - Mode: {denoise_mode}")
-        print("─" * 60)
-        print(f"█░░░░░░░░░░░░░░░░░░ Cleaning audio ({denoise_intensity*100:.0f}%)...", end='', flush=True)
+        print("-" * 60)
+        print(f"[Denoise] Cleaning audio ({denoise_intensity*100:.0f}%)...", end='', flush=True)
         try:
             if denoise_mode == "Hiss Only":
                 if audio.shape[0] == 2:
@@ -342,16 +327,16 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
                     audio[1] = apply_denoise_simple(audio[1], sample_rate, denoise_intensity)
                 else:
                     audio = apply_denoise_simple(audio, sample_rate, denoise_intensity)
-            print("\r" + "█" * 20 + " Denoise complete! ✓\n")
+            print(" done.\n")
         except Exception as e:
-            print(f"\r⚠ Denoise failed: {e}\n")
+            print(f" failed: {e}\n")
     else:
         print("[1/3] DENOISING - Skipped (Mode: Off)\n")
 
     # STEP 2: GLOBAL PROCESSING
     print("[2/3] APPLYING MASTER PROCESSING")
-    print("─" * 60)
-    print("█░░░░░░░░░░░░░░░░░░ Processing audio...", end='', flush=True)
+    print("-" * 60)
+    print("[Master] Processing audio...", end='', flush=True)
     
     # Apply processing directly to the original audio (no separation)
     try:
@@ -365,11 +350,11 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
         
         # 1. Fix stereo phase issues
         if audio.shape[0] == 2:
-            print("\r█░░░░░░░░░░░░░░░░░░ [1/6] Fixing stereo phase...", end='', flush=True)
+            print("\n[Master 1/6] Checking stereo phase...", end='', flush=True)
             audio = apply_stereo_correlation_fix(audio, sample_rate)
         
         # 2. EQ shaping
-        print("\r█░░░░░░░░░░░░░░░░░░ [2/6] Applying EQ...", end='', flush=True)
+        print("\n[Master 2/6] Applying EQ...", end='', flush=True)
         audio = apply_parametric_eq(
             audio,
             low_gain=eq_low_gain,
@@ -379,7 +364,7 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
         )
         
         # 3. Multiband compression for transparent dynamics
-        print("\r█░░░░░░░░░░░░░░░░░░ [3/6] Multiband compression...", end='', flush=True)
+        print("\n[Master 3/6] Multiband compression...", end='', flush=True)
         audio = apply_multiband_compression(
             audio,
             sample_rate=sample_rate,
@@ -390,7 +375,7 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
         )
         
         # 4. Clarity enhancement (transient shaper + harmonic exciter + presence)
-        print("\r█░░░░░░░░░░░░░░░░░░ [4/6] Clarity enhancement...", end='', flush=True)
+        print("\n[Master 4/6] Clarity enhancement...", end='', flush=True)
         audio = apply_clarity_enhancement(
             audio,
             clarity_amount=clarity_amount,
@@ -398,10 +383,10 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
         )
         
         # 4.5 VOCAL ENHANCEMENT (optional: de-esser, breath smoother, reverb)
-        if vocal_enhance and deesser_amount > 0.01:
+        if vocal_enhance and max(deesser_amount, breath_smooth, reverb_amount, naturalize_vocal) > 0.01:
             try:
                 from .vocal_enhance import apply_deesser, apply_breath_smoother, apply_vocal_reverb, apply_vocal_naturalizer
-                print("\r█░░░░░░░░░░░░░░░░░░ [4.5/6] Vocal enhancement...", end='', flush=True)
+                print("\n[Master 4.5/6] Vocal enhancement...", end='', flush=True)
                 
                 # Vocal naturalizer: remove auto-tune/robotic artifacts (FIRST)
                 if naturalize_vocal > 0.01:
@@ -434,16 +419,16 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
                     else:
                         audio = apply_vocal_reverb(audio, sample_rate, reverb_amount, "small_room")
             except (ImportError, Exception) as e:
-                print(f"\n  ⚠ Vocal enhancement skipped: {e}")
+                print(f"\n[Master] Vocal enhancement skipped: {e}")
         
         # 5. Stereo widening for spaciousness
-        print("\r█░░░░░░░░░░░░░░░░░░ [5/6] Stereo widening...", end='', flush=True)
+        print("\n[Master 5/6] Stereo widening...", end='', flush=True)
         if audio.shape[0] == 2:
             width = 1.0 + (clarity_amount * 0.3)  # Link width to clarity
             audio = apply_stereo_widening(audio, width, sample_rate)
         
         # 6. Loudness normalization (ITU-R BS.1770-4)
-        print("\r█░░░░░░░░░░░░░░░░░░ [6/6] Loudness normalization...", end='', flush=True)
+        print("\n[Master 6/6] Loudness normalization...", end='', flush=True)
         audio = apply_loudness_normalization(
             audio,
             target_loudness=target_loudness,
@@ -456,12 +441,12 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
         if max_val > 0.98:
             audio = audio * (0.98 / max_val)
     
-    print("\r" + "█" * 20 + " Processing complete ✓\n")
+    print("\n[Master] Processing complete.\n")
     
     # STEP 3: FINAL LIMITING
     print("[3/3] APPLYING FINAL LIMITER")
-    print("─" * 60)
-    print("█░░░░░░░░░░░░░░░░░░ Protecting against clipping...", end='', flush=True)
+    print("-" * 60)
+    print("[Limiter] Protecting against clipping...", end='', flush=True)
     
     try:
         from .master_audio import apply_soft_limiter
@@ -473,7 +458,7 @@ def process_audio_stems(audio, sample_rate, eq_low_gain, eq_mid_gain, eq_high_ga
         if max_val > 1.0:
             audio = audio * (0.99 / max_val)
     
-    print("\r" + "█" * 20 + " Limiting complete ✓\n")
+    print(" done.\n")
     print("="*60)
     print("  Mastering finished! Ready to export")
     print("="*60 + "\n")

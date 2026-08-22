@@ -69,7 +69,10 @@ def apply_stereo_correlation_fix(audio, sample_rate=44100):
     right = audio[1, :]
     
     # Calculate correlation
-    correlation = np.corrcoef(left, right)[0, 1]
+    if left.size == 0 or np.std(left) < 1e-12 or np.std(right) < 1e-12:
+        correlation = 1.0
+    else:
+        correlation = float(np.corrcoef(left, right)[0, 1])
     
     # If correlation is very negative, we have phase issues
     if correlation < -0.3:

@@ -4,6 +4,7 @@ ComfyUI Music Tools - A comprehensive music processing node pack for ComfyUI
 
 from .nodes import (
     Music_NoiseRemove,
+    Music_AudioRepair,
     Music_AudioUpscale,
     Music_StereoEnhance,
     Music_LufsNormalizer,
@@ -16,10 +17,12 @@ from .nodes import (
     Music_StemSeparation,
     Music_StemRecombination,
     Music_MasterAudioEnhancement,
+    Music_Fix,
 )
 
 NODE_CLASS_MAPPINGS = {
     "Music_NoiseRemove": Music_NoiseRemove,
+    "Music_AudioRepair": Music_AudioRepair,
     "Music_AudioUpscale": Music_AudioUpscale,
     "Music_StereoEnhance": Music_StereoEnhance,
     "Music_LufsNormalizer": Music_LufsNormalizer,
@@ -32,10 +35,12 @@ NODE_CLASS_MAPPINGS = {
     "Music_StemSeparation": Music_StemSeparation,
     "Music_StemRecombination": Music_StemRecombination,
     "Music_MasterAudioEnhancement": Music_MasterAudioEnhancement,
+    "Music_Fix": Music_Fix,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Music_NoiseRemove": "Music - Noise Remove",
+    "Music_AudioRepair": "Music - Audio Repair",
     "Music_AudioUpscale": "Music - Audio Upscale",
     "Music_StereoEnhance": "Music - Stereo Enhance",
     "Music_LufsNormalizer": "Music - LUFS Normalizer",
@@ -48,6 +53,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Music_StemSeparation": "Music - Stem Separation",
     "Music_StemRecombination": "Music - Stem Recombination",
     "Music_MasterAudioEnhancement": "Music - Master Audio Enhancement",
+    "Music_Fix": "Music Fix",
 }
 
 __all__ = [
