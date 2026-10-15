@@ -1,3 +1,4 @@
+[![Somora](https://somora.media/assets/somora-github-en.png)](https://somora.media)
 # ComfyUI Music Tools
 
 Audio repair, genre-informed finishing, loudness, EQ, dynamics, stereo, and utility nodes for ComfyUI.
